@@ -1,1 +1,13 @@
 PREP-PRIVATE.md
+
+# .NET
+bin/
+obj/
+*.user
+
+# Node / Next.js
+node_modules/
+.next/
+
+# test output
+test-results/
