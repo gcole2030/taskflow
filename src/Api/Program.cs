@@ -20,6 +20,7 @@ try
     SqlMapper.AddTypeHandler(new EnumTypeHandler<Api.Domain.TaskStatus>());
     SqlMapper.AddTypeHandler(new EnumTypeHandler<Api.Domain.Priority>());
     SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
+    SqlMapper.AddTypeHandler(new JsonElementTypeHandler());
 
     builder.Services.AddSingleton(sp =>
     {
