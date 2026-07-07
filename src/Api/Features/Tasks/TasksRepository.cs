@@ -154,4 +154,101 @@ public sealed class TasksRepository(NpgsqlDataSource dataSource, IClock clock)
 
         return events.ToList();
     }
+
+    public async Task<TaskDto?> PatchAsync(Guid id, PatchTaskRequest patch)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        var current = await connection.QuerySingleOrDefaultAsync<TaskDto>(
+            "SELECT " + SelectColumns + " FROM tasks WHERE id = @Id FOR UPDATE", new { Id = id }, transaction);
+
+        if (current is null)
+        {
+            await transaction.RollbackAsync();
+            return null;
+        }
+
+        var merged = TaskPatchMerger.Merge(current, patch);
+        var diff = TaskPatchMerger.Diff(current, merged);
+
+        if (diff.Count == 0)
+        {
+            // Nothing actually changed (fields omitted, or resent with identical values) —
+            // a true no-op should not bump updated_at or append a spurious UPDATED event.
+            await transaction.RollbackAsync();
+            return current;
+        }
+
+        var updated = await connection.QuerySingleAsync<TaskDto>(
+            "UPDATE tasks SET title = @Title, description = @Description, priority = @Priority, " +
+            "due_date = @DueDate, updated_at = now() WHERE id = @Id RETURNING " + SelectColumns,
+            new
+            {
+                Id = id,
+                merged.Title,
+                merged.Description,
+                Priority = merged.Priority.ToString(),
+                merged.DueDate,
+            },
+            transaction);
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO task_events (task_id, event_type, from_status, to_status, metadata, occurred_at)
+            VALUES (@TaskId, 'UPDATED', NULL, NULL, @Metadata, @OccurredAt)
+            """,
+            new
+            {
+                TaskId = id,
+                Metadata = JsonSerializer.SerializeToElement(diff),
+                OccurredAt = clock.UtcNow,
+            },
+            transaction);
+
+        await transaction.CommitAsync();
+        return updated;
+    }
+
+    public async Task<(IReadOnlyList<TaskDto> Tasks, int TotalCount)> ListAsync(
+        TaskStatus? status, Priority? priority, bool overdue, DateOnly today, int page, int pageSize)
+    {
+        var conditions = new List<string>();
+        var parameters = new DynamicParameters();
+
+        if (status is not null)
+        {
+            conditions.Add("status = @Status");
+            parameters.Add("Status", status.Value.ToString());
+        }
+
+        if (priority is not null)
+        {
+            conditions.Add("priority = @Priority");
+            parameters.Add("Priority", priority.Value.ToString());
+        }
+
+        if (overdue)
+        {
+            conditions.Add("due_date < @Today AND status NOT IN ('DONE', 'CANCELLED')");
+            parameters.Add("Today", today);
+        }
+
+        var whereClause = conditions.Count > 0 ? "WHERE " + string.Join(" AND ", conditions) : "";
+
+        await using var connection = await dataSource.OpenConnectionAsync();
+
+        var totalCount = await connection.QuerySingleAsync<int>(
+            "SELECT count(*) FROM tasks " + whereClause, parameters);
+
+        parameters.Add("Offset", (page - 1) * pageSize);
+        parameters.Add("Limit", pageSize);
+
+        var tasks = await connection.QueryAsync<TaskDto>(
+            "SELECT " + SelectColumns + " FROM tasks " + whereClause +
+            " ORDER BY id ASC LIMIT @Limit OFFSET @Offset",
+            parameters);
+
+        return (tasks.ToList(), totalCount);
+    }
 }
