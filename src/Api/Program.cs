@@ -1,5 +1,6 @@
 using Api.Common;
 using Dapper;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Npgsql;
 using Serilog;
 
@@ -31,9 +32,9 @@ try
 
     Migrator.Run(connectionString, new DbUpSerilogLogger());
 
-    app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
+    app.MapGet("/healthz", () => TypedResults.Ok(new { status = "ok" }));
 
-    app.MapGet("/readyz", async (NpgsqlDataSource dataSource) =>
+    app.MapGet("/readyz", async Task<Results<Ok<object>, ProblemHttpResult>> (NpgsqlDataSource dataSource) =>
     {
         try
         {
@@ -41,12 +42,12 @@ try
             await using var command = connection.CreateCommand();
             command.CommandText = "SELECT 1";
             await command.ExecuteScalarAsync();
-            return Results.Ok(new { status = "ready" });
+            return TypedResults.Ok<object>(new { status = "ready" });
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "Readiness check failed");
-            return Results.Problem(detail: "Database unavailable", statusCode: StatusCodes.Status503ServiceUnavailable);
+            return TypedResults.Problem(detail: "Database unavailable", statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     });
 
