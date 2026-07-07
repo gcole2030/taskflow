@@ -159,5 +159,54 @@ Format per entry:
 - **Human corrections:** none — applied the lesson from the create-and-get
   review proactively this time (added the `FOR UPDATE` row lock up front,
   rather than shipping the race and fixing it in a follow-up review round).
-- **Review:** Pending — `/review-slice` to run before PR.
+- **Review:** `/review-slice` → APPROVE. Verified task+event writes share one
+  transaction, transition legality checked only via `Domain.StateMachine`
+  (grepped `src/Api/Features/` for status literals — zero matches), no
+  untyped `Results.*`, no SQL injection surface. One non-blocking nit (a
+  transition request missing the `"to"` field silently defaults to
+  `TaskStatus.TODO`, always safely 409ing but with a confusing message) —
+  left as-is per the APPROVE verdict, no fix commit needed. Merged as PR #3.
 - **Elapsed:** ~35min (started 17:09).
+
+## 2026-07-07 17:22 — slice/list-patch
+- **Agent & entry point:** Claude Code, `/implement-slice list-patch` (via
+  `prompts/40-list-patch.md`), branched directly off `main` after PR #3
+  (transitions) was squash-merged.
+- **Spec reference:** AC9, AC10, AC11 (§5); §4 `PATCH /tasks/{id}` (partial
+  update of title/description/priority/due_date), `GET /tasks` (status/
+  priority/overdue filters, page/pageSize default 1/20 cap 100, `X-Total-Count`);
+  §2 due_date "must not be in the past **on create**" — read literally, so
+  PATCH does *not* re-apply that rule (also the only way to construct AC11's
+  scenario: an already-overdue task, built via PATCH after creation).
+  All 11 ACs now covered by this repo.
+- **What the agent did:**
+  - Wrote `ListPatchTests` (AC9: PATCH changing priority → 200, `updated_at`
+    advances, UPDATED event appended; AC10: 25 tasks, page 2/pageSize 10 →
+    correct 10-item slice + `X-Total-Count: 25`; AC11: IN_PROGRESS task
+    PATCHed to a past due_date appears in `overdue=true`, a DONE one doesn't)
+    plus supplementary coverage (absent fields untouched, explicit-null
+    clears a field, 404, priority filter, default pagination).
+  - Wrote `TaskPatchMergerTests` (8 cases, no DB) for the pure merge/diff
+    logic per the prompt's explicit ask ("unit tests: ... the PATCH
+    field-merge logic").
+  - **Red run shown**: with `Program.cs`/`TasksEndpoints.cs`/`TasksRepository.cs`
+    reverted to their pre-slice versions, all 8 `ListPatchTests` failed
+    (15 passing: the 8 create-and-get + 7 transitions tests; 49 unit tests
+    unaffected) — committed at that state as `test(list-patch)`.
+  - Implemented `PatchTaskRequest.FromJson` (parses a raw `JsonElement` body
+    to distinguish "field omitted" from "field explicitly null," which a
+    strongly-typed record can't do), `TaskPatchMerger` (pure merge + diff —
+    only fields that actually changed value end up in the UPDATED event's
+    metadata, not just fields that were "set"), `PatchTaskValidator`, and
+    `TasksRepository.PatchAsync`/`ListAsync` (row-locked patch, one
+    transaction; list filters built from parameterized SQL fragments via
+    `DynamicParameters`, ordered by `id` since UUIDv7 is already chronological
+    — avoids a `created_at` tie-breaking problem for AC10's page slicing).
+    **Green run**: 49 unit + 23 integration passing — committed as
+    `feat(list-patch)`.
+  - `make gate` clean — **AC1 through AC11 all reported present.**
+- **Human corrections:** none — self-corrected one API-surface mistake:
+  assumed `JsonElement.GetDateOnly()` existed (it doesn't); fixed with
+  `DateOnly.TryParse` on the raw string instead.
+- **Review:** Pending — `/review-slice` to run before PR.
+- **Elapsed:** ~40min (started 17:22).
