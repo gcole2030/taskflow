@@ -106,6 +106,16 @@ public class ListPatchTests(PostgresFixture fixture) : IntegrationTestBase(fixtu
     }
 
     [Fact]
+    public async Task List_InvalidStatus_Returns400_WithFieldError()
+    {
+        var response = await Client.GetAsync("/api/v1/tasks?status=NOT_A_STATUS");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.GetProperty("errors").TryGetProperty("status", out _));
+    }
+
+    [Fact]
     public async Task List_FiltersByPriority()
     {
         await CreateTaskAsync(priority: "HIGH");

@@ -95,21 +95,48 @@ public static class TasksEndpoints
             : TypedResults.Problem(detail: $"Task '{id}' was not found.", statusCode: StatusCodes.Status404NotFound);
     }
 
-    private static async Task<Ok<IReadOnlyList<TaskDto>>> ListTasksAsync(
+    private static async Task<Results<Ok<IReadOnlyList<TaskDto>>, ValidationProblem>> ListTasksAsync(
         HttpResponse httpResponse,
         TasksRepository repository,
         IClock clock,
-        TaskStatus? status = null,
-        Priority? priority = null,
+        string? status = null,
+        string? priority = null,
         bool overdue = false,
         int page = 1,
         int pageSize = 20)
     {
+        // Bound as strings (not TaskStatus?/Priority? directly) so an unparseable value is a
+        // 400, not a silently-dropped filter — the framework's default nullable-enum query
+        // binding treats a failed parse as "not supplied" rather than an error.
+        var errors = new Dictionary<string, string[]>();
+
+        TaskStatus? parsedStatus = null;
+        if (status is not null)
+        {
+            if (Enum.TryParse(status, out TaskStatus statusValue))
+                parsedStatus = statusValue;
+            else
+                errors["status"] = [$"Status must be one of {string.Join(", ", Enum.GetNames<TaskStatus>())}."];
+        }
+
+        Priority? parsedPriority = null;
+        if (priority is not null)
+        {
+            if (Enum.TryParse(priority, out Priority priorityValue))
+                parsedPriority = priorityValue;
+            else
+                errors["priority"] = [$"Priority must be one of {string.Join(", ", Enum.GetNames<Priority>())}."];
+        }
+
+        if (errors.Count > 0)
+            return TypedResults.ValidationProblem(errors);
+
         page = Math.Max(page, 1);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var today = DateOnly.FromDateTime(clock.UtcNow.UtcDateTime);
 
-        var (tasks, totalCount) = await repository.ListAsync(status, priority, overdue, today, page, pageSize);
+        var (tasks, totalCount) =
+            await repository.ListAsync(parsedStatus, parsedPriority, overdue, today, page, pageSize);
 
         httpResponse.Headers.Append("X-Total-Count", totalCount.ToString());
         return TypedResults.Ok(tasks);

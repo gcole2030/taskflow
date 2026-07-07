@@ -18,6 +18,9 @@ public sealed class PatchTaskValidator
         if (patch.DueDateInvalid)
             errors["dueDate"] = ["Due date must be a valid date."];
 
+        // Deliberately no "must not be in the past" check here, unlike CreateTaskValidator:
+        // spec §2 scopes that rule to "on create" only. It's also the only way to construct
+        // an already-overdue task for AC11 without waiting in real time — don't add it back.
         return errors;
     }
 }
