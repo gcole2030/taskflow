@@ -35,6 +35,7 @@ try
     builder.Services.AddSingleton<IClock, SystemClock>();
     builder.Services.AddSingleton<TasksRepository>();
     builder.Services.AddSingleton<CreateTaskValidator>();
+    builder.Services.AddSingleton<PatchTaskValidator>();
 
     var app = builder.Build();
 
