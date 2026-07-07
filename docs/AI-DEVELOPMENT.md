@@ -119,5 +119,45 @@ Format per entry:
   4. Also normalized `TaskDto.CreatedAt`/`UpdatedAt` to `DateTime` (Npgsql's
      native mapping for `timestamptz`) instead of `DateTimeOffset`, sidestepping
      a second, unrelated type-matching gap in the same materialization path.
-- **Review:** Not yet reviewed via `/review-slice` — pending before PR.
+- **Review:** `/review-slice` → APPROVE with one should-fix (Idempotency-Key
+  check-then-insert race) and three nits (enum-workaround comment, hardcoded
+  Location header, guardrail-invisible SQL interpolation). All four fixed in
+  a follow-up `fix(create-and-get)` commit before merge (see PR #2).
 - **Elapsed:** ~40min (started 16:36).
+
+## 2026-07-07 17:09 — slice/transitions
+- **Agent & entry point:** Claude Code, `/implement-slice transitions` (via
+  `prompts/30-transitions.md`), branched directly off `main` after PR #2
+  (create-and-get) was squash-merged.
+- **Spec reference:** AC4, AC5, AC6, AC7, AC8 (§5); §3 state machine
+  (enforcement only — `Domain.StateMachine` itself was already built in the
+  bootstrap slice, untouched here); §4 `POST /tasks/{id}/transitions`,
+  `GET /tasks/{id}/events`; §7 (single transaction for status update + event).
+- **What the agent did:**
+  - Wrote `TransitionsTests` (AC4: TODO→IN_PROGRESS returns 200 + a
+    STATUS_CHANGED event with from/to; AC5: DONE + any transition → 409, event
+    count unchanged; AC6: TODO→DONE directly → 409; AC7: BLOCKED transition
+    with `metadata.reason` surfaces on the event via `GET /events`; AC8: 3
+    status changes → 4 events, chronological) plus supplementary 404 coverage
+    for both new routes on a nonexistent task.
+  - **Red run shown**: with `Program.cs`/`TasksEndpoints.cs`/`TasksRepository.cs`
+    reverted to their pre-slice (post-create-and-get) versions, all 5 AC
+    tests failed (10 passing: the 8 create-and-get tests plus the two new
+    404 tests, which pass coincidentally since an unrouted path also 404s;
+    41 unit tests unaffected) — committed at that state as `test(transitions)`.
+  - Implemented `TasksRepository.TransitionAsync` (row lock via
+    `SELECT ... FOR UPDATE` before checking `StateMachine.CanTransition`, so
+    two concurrent transitions on the same task can't both read the same
+    stale status; status UPDATE + STATUS_CHANGED event commit in one
+    transaction; illegal/missing-task cases roll back before any event is
+    written) and `GetEventsAsync` (ordered by the bigserial `id`, not
+    `occurred_at`, so ordering is monotonic regardless of clock precision).
+    Added `JsonElementTypeHandler` so `jsonb` metadata round-trips as nested
+    JSON in responses rather than an escaped string. **Green run**: 41 unit +
+    15 integration passing — committed as `feat(transitions)`.
+  - `make gate` clean (AC4-AC8 now reported present alongside AC1-AC3).
+- **Human corrections:** none — applied the lesson from the create-and-get
+  review proactively this time (added the `FOR UPDATE` row lock up front,
+  rather than shipping the race and fixing it in a follow-up review round).
+- **Review:** Pending — `/review-slice` to run before PR.
+- **Elapsed:** ~35min (started 17:09).
