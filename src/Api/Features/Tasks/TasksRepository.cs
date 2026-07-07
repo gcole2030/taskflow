@@ -8,10 +8,8 @@ namespace Api.Features.Tasks;
 public sealed class TasksRepository(NpgsqlDataSource dataSource, IClock clock)
 {
     private const string SelectColumns =
-        """
-        id AS Id, title AS Title, description AS Description, status AS Status,
-        priority AS Priority, due_date AS DueDate, created_at AS CreatedAt, updated_at AS UpdatedAt
-        """;
+        "id AS Id, title AS Title, description AS Description, status AS Status, " +
+        "priority AS Priority, due_date AS DueDate, created_at AS CreatedAt, updated_at AS UpdatedAt";
 
     public async Task<TaskDto?> FindByIdempotencyKeyAsync(string idempotencyKey)
     {
@@ -24,7 +22,7 @@ public sealed class TasksRepository(NpgsqlDataSource dataSource, IClock clock)
             return null;
 
         return await connection.QuerySingleOrDefaultAsync<TaskDto>(
-            $"SELECT {SelectColumns} FROM tasks WHERE id = @Id", new { Id = taskId.Value });
+            "SELECT " + SelectColumns + " FROM tasks WHERE id = @Id", new { Id = taskId.Value });
     }
 
     public async Task<TaskDto> CreateAsync(CreateTaskRequest request, string? idempotencyKey)
@@ -35,12 +33,15 @@ public sealed class TasksRepository(NpgsqlDataSource dataSource, IClock clock)
         await using var connection = await dataSource.OpenConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
 
+        // Priority/Status are passed as .ToString() rather than the enum itself: Dapper's
+        // LookupDbType coerces enum parameters to their underlying int *before* consulting
+        // custom ITypeHandlers, so the registered EnumTypeHandler<T> is never reached on
+        // writes (it still works fine for reads/Parse). Passing the string directly sidesteps
+        // this — see AI-DEVELOPMENT.md for the failure this caused (tasks_priority_check).
         var task = await connection.QuerySingleAsync<TaskDto>(
-            $"""
-            INSERT INTO tasks (id, title, description, priority, due_date)
-            VALUES (@Id, @Title, @Description, @Priority, @DueDate)
-            RETURNING {SelectColumns}
-            """,
+            "INSERT INTO tasks (id, title, description, priority, due_date) " +
+            "VALUES (@Id, @Title, @Description, @Priority, @DueDate) " +
+            "RETURNING " + SelectColumns,
             new { Id = id, request.Title, request.Description, Priority = priority.ToString(), request.DueDate },
             transaction);
 
@@ -54,10 +55,22 @@ public sealed class TasksRepository(NpgsqlDataSource dataSource, IClock clock)
 
         if (idempotencyKey is not null)
         {
-            await connection.ExecuteAsync(
-                "INSERT INTO idempotency_keys (key, task_id) VALUES (@Key, @TaskId)",
-                new { Key = idempotencyKey, TaskId = id },
-                transaction);
+            try
+            {
+                await connection.ExecuteAsync(
+                    "INSERT INTO idempotency_keys (key, task_id) VALUES (@Key, @TaskId)",
+                    new { Key = idempotencyKey, TaskId = id },
+                    transaction);
+            }
+            catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
+            {
+                // Lost a race against a concurrent request using the same Idempotency-Key:
+                // roll back this attempt's task+event and return whichever one actually won.
+                await transaction.RollbackAsync();
+                return await FindByIdempotencyKeyAsync(idempotencyKey)
+                    ?? throw new InvalidOperationException(
+                        $"Idempotency key '{idempotencyKey}' conflicted but no task could be found.");
+            }
         }
 
         await transaction.CommitAsync();
@@ -69,6 +82,6 @@ public sealed class TasksRepository(NpgsqlDataSource dataSource, IClock clock)
         await using var connection = await dataSource.OpenConnectionAsync();
 
         return await connection.QuerySingleOrDefaultAsync<TaskDto>(
-            $"SELECT {SelectColumns} FROM tasks WHERE id = @Id", new { Id = id });
+            "SELECT " + SelectColumns + " FROM tasks WHERE id = @Id", new { Id = id });
     }
 }

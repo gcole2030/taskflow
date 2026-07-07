@@ -23,11 +23,11 @@ public class CreateAndGetTests(PostgresFixture fixture) : IntegrationTestBase(fi
         var response = await Client.PostAsJsonAsync("/api/v1/tasks", payload);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        Assert.NotNull(response.Headers.Location);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var id = body.GetProperty("id").GetGuid();
         Assert.NotEqual(Guid.Empty, id);
+        Assert.Equal($"/api/v1/tasks/{id}", response.Headers.Location?.ToString());
         Assert.Equal("Write the spec", body.GetProperty("title").GetString());
         Assert.Equal("TODO", body.GetProperty("status").GetString());
         Assert.True(body.TryGetProperty("createdAt", out _));
@@ -54,6 +54,29 @@ public class CreateAndGetTests(PostgresFixture fixture) : IntegrationTestBase(fi
         var body1 = await response1.Content.ReadFromJsonAsync<JsonElement>();
         var body2 = await response2.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(body1.GetProperty("id").GetGuid(), body2.GetProperty("id").GetGuid());
+
+        await using var connection = new NpgsqlConnection(Fixture.ConnectionString);
+        var taskCount = await connection.QuerySingleAsync<long>("SELECT count(*) FROM tasks");
+        var eventCount = await connection.QuerySingleAsync<long>("SELECT count(*) FROM task_events");
+        Assert.Equal(1, taskCount);
+        Assert.Equal(1, eventCount);
+    }
+
+    [Fact]
+    public async Task AC2_ConcurrentPostsWithSameIdempotencyKey_ConvergeToOneTask()
+    {
+        var key = Guid.NewGuid().ToString();
+        var payload = new { title = "Racing task" };
+
+        var responses = await Task.WhenAll(
+            SendCreateAsync(payload, key),
+            SendCreateAsync(payload, key));
+
+        Assert.All(responses, r => Assert.True(r.StatusCode is HttpStatusCode.Created or HttpStatusCode.OK));
+
+        var bodies = await Task.WhenAll(responses.Select(r => r.Content.ReadFromJsonAsync<JsonElement>()));
+        var ids = bodies.Select(b => b.GetProperty("id").GetGuid()).Distinct().ToArray();
+        Assert.Single(ids);
 
         await using var connection = new NpgsqlConnection(Fixture.ConnectionString);
         var taskCount = await connection.QuerySingleAsync<long>("SELECT count(*) FROM tasks");

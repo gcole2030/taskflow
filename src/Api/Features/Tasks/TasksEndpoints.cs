@@ -14,6 +14,7 @@ public static class TasksEndpoints
 
     private static async Task<Results<Created<TaskDto>, Ok<TaskDto>, ValidationProblem>> CreateTaskAsync(
         CreateTaskRequest request,
+        HttpRequest httpRequest,
         [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey,
         TasksRepository repository,
         CreateTaskValidator validator)
@@ -30,7 +31,7 @@ public static class TasksEndpoints
         }
 
         var task = await repository.CreateAsync(request, idempotencyKey);
-        return TypedResults.Created($"/api/v1/tasks/{task.Id}", task);
+        return TypedResults.Created($"{httpRequest.Path}/{task.Id}", task);
     }
 
     private static async Task<Results<Ok<TaskDto>, ProblemHttpResult>> GetTaskAsync(
