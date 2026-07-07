@@ -1,7 +1,10 @@
+using System.Text.Json;
 using Api.Common;
+using Api.Domain;
 using Dapper;
 using Npgsql;
 using Priority = Api.Domain.Priority;
+using TaskStatus = Api.Domain.TaskStatus;
 
 namespace Api.Features.Tasks;
 
@@ -83,5 +86,72 @@ public sealed class TasksRepository(NpgsqlDataSource dataSource, IClock clock)
 
         return await connection.QuerySingleOrDefaultAsync<TaskDto>(
             "SELECT " + SelectColumns + " FROM tasks WHERE id = @Id", new { Id = id });
+    }
+
+    public async Task<TransitionResult> TransitionAsync(Guid id, TaskStatus to, JsonElement metadata)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        // FOR UPDATE serializes concurrent transitions on the same task: without it, two
+        // requests could both read the same current status and both consider their
+        // transition legal, letting an illegal (or duplicate) transition slip through.
+        var current = await connection.QuerySingleOrDefaultAsync<TaskDto>(
+            "SELECT " + SelectColumns + " FROM tasks WHERE id = @Id FOR UPDATE", new { Id = id }, transaction);
+
+        if (current is null)
+        {
+            await transaction.RollbackAsync();
+            return new TransitionResult(TransitionOutcome.NotFound);
+        }
+
+        if (!StateMachine.CanTransition(current.Status, to))
+        {
+            await transaction.RollbackAsync();
+            return new TransitionResult(TransitionOutcome.IllegalTransition, CurrentStatus: current.Status);
+        }
+
+        var updated = await connection.QuerySingleAsync<TaskDto>(
+            "UPDATE tasks SET status = @To, updated_at = now() WHERE id = @Id RETURNING " + SelectColumns,
+            new { Id = id, To = to.ToString() },
+            transaction);
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO task_events (task_id, event_type, from_status, to_status, metadata, occurred_at)
+            VALUES (@TaskId, 'STATUS_CHANGED', @From, @To, @Metadata, @OccurredAt)
+            """,
+            new
+            {
+                TaskId = id,
+                From = current.Status.ToString(),
+                To = to.ToString(),
+                Metadata = metadata,
+                OccurredAt = clock.UtcNow,
+            },
+            transaction);
+
+        await transaction.CommitAsync();
+        return new TransitionResult(TransitionOutcome.Success, updated);
+    }
+
+    public async Task<IReadOnlyList<EventDto>?> GetEventsAsync(Guid id)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync();
+
+        var exists = await connection.QuerySingleOrDefaultAsync<Guid?>(
+            "SELECT id FROM tasks WHERE id = @Id", new { Id = id });
+        if (exists is null)
+            return null;
+
+        var events = await connection.QueryAsync<EventDto>(
+            """
+            SELECT id AS Id, task_id AS TaskId, event_type AS EventType, from_status AS FromStatus,
+                   to_status AS ToStatus, metadata AS Metadata, occurred_at AS OccurredAt
+            FROM task_events WHERE task_id = @Id ORDER BY id ASC
+            """,
+            new { Id = id });
+
+        return events.ToList();
     }
 }
