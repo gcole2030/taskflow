@@ -21,6 +21,7 @@ services:
     environment:
       ConnectionStrings__Db: "Host=db;Database=taskman;Username=taskman;Password=taskman"
       ASPNETCORE_URLS: "http://+:8080"
+      WebOrigin: "http://localhost:3000"
     ports: ["8080:8080"]
     depends_on:
       db:
