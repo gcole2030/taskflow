@@ -66,3 +66,58 @@ Format per entry:
 - **Review:** No separate AI-reviewer pass run yet for this slice (infra-only, no AC
   surface); `scripts/guardrails.sh` mechanized checks are clean.
 - **Elapsed:** ~1h (started 15:25).
+
+## 2026-07-07 16:36 — slice/create-and-get
+- **Agent & entry point:** Claude Code, `/implement-slice create-and-get` (via
+  `prompts/20-create-and-get.md`, driven manually rather than through
+  `scripts/next-slice.sh`/`make next` — that script launches an interactive
+  nested `claude` session, which can't be driven from inside an existing
+  session, so the same branch → tests-first → gate → PR steps were run directly).
+- **Spec reference:** AC1, AC2, AC3 (§5); §2 domain model (Task fields, TaskEvent);
+  §4 `POST /tasks` (Idempotency-Key), `GET /tasks/{id}` (404 when absent); §7
+  (Dapper/Npgsql, single transaction for task+event writes).
+- **What the agent did:**
+  - Branched `slice/create-and-get` off `main` (after `slice/bootstrap` PR #1
+    was squash-merged) and appended the log stub via `scripts/log-entry.sh`.
+  - Wrote `CreateAndGetTests` (AC1: 201+Location+CREATED event; AC2:
+    Idempotency-Key replay with no duplicate task/event, verified via direct
+    DB assertions since there's no `/events` endpoint yet; AC3: empty title
+    and past due_date → 400 with field errors) plus supplementary GET
+    200/404 tests, and `CreateTaskValidatorTests` (11 cases) using a fake
+    `IClock` for the due-date-in-the-past rule.
+  - **Red run shown**: with `Program.cs` reverted to its pre-slice state (no
+    `/tasks` routes registered), all 5 integration tests failed with 404
+    (41 unit tests passing) — committed at that state as `test(create-and-get)`.
+  - Implemented `TasksRepository` (task insert + CREATED event in one
+    `NpgsqlTransaction`, UUIDv7 via `Guid.CreateVersion7()`, Idempotency-Key
+    lookup/insert), `TasksEndpoints` (`POST`/`GET` under `/api/v1`, `TypedResults`
+    throughout, `Results<Created<TaskDto>, Ok<TaskDto>, ValidationProblem>` for
+    the create path), wired into `Program.cs` (JSON enum string conversion,
+    DI registrations). **Green run**: 41 unit + 7 integration passing —
+    committed as `feat(create-and-get)`.
+  - `make gate` clean (guardrails now report AC1/AC2/AC3 test present;
+    `dotnet format`/`-warnaserror` clean).
+- **Human corrections:** none — self-corrected three Dapper issues discovered
+  via the red→green cycle (all fixed before the feat commit, not left as
+  follow-ups):
+  1. Dapper has no built-in parameter support for `DateOnly` (`due_date`) —
+     threw `NotSupportedException` on insert. Added `DateOnlyTypeHandler`.
+  2. Dapper's `LookupDbType` converts enum parameters to their underlying int
+     *before* consulting custom `ITypeHandler`s registered via `AddTypeHandler`
+     — silently sent `"2"` instead of `"HIGH"` for `priority`, tripping the
+     `tasks_priority_check` constraint. Worked around by calling `.ToString()`
+     on enum values at the Dapper call site rather than relying on the handler
+     for writes (the handler still works fine for reads/`Parse`).
+  3. Dapper's "constructor-matching" materialization (used for record types
+     without a parameterless constructor) bypasses custom type handlers
+     entirely and requires the constructor's parameter types to exactly match
+     the raw ADO column types — failed with `InvalidCastException` trying to
+     read a `DateOnly` due_date and a `string` status/priority into a
+     positional record. Fixed by rewriting `TaskDto` with `required ... { get; init; }`
+     properties (no positional constructor), forcing Dapper's standard
+     property-setter materialization path, which does respect custom handlers.
+  4. Also normalized `TaskDto.CreatedAt`/`UpdatedAt` to `DateTime` (Npgsql's
+     native mapping for `timestamptz`) instead of `DateTimeOffset`, sidestepping
+     a second, unrelated type-matching gap in the same materialization path.
+- **Review:** Not yet reviewed via `/review-slice` — pending before PR.
+- **Elapsed:** ~40min (started 16:36).

@@ -1,4 +1,6 @@
+using System.Text.Json.Serialization;
 using Api.Common;
+using Api.Features.Tasks;
 using Dapper;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Npgsql;
@@ -17,6 +19,7 @@ try
 
     SqlMapper.AddTypeHandler(new EnumTypeHandler<Api.Domain.TaskStatus>());
     SqlMapper.AddTypeHandler(new EnumTypeHandler<Api.Domain.Priority>());
+    SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
 
     builder.Services.AddSingleton(sp =>
     {
@@ -24,6 +27,13 @@ try
             ?? throw new InvalidOperationException("ConnectionStrings:Db is not configured.");
         return Db.CreateDataSource(connectionString);
     });
+
+    builder.Services.ConfigureHttpJsonOptions(options =>
+        options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
+    builder.Services.AddSingleton<IClock, SystemClock>();
+    builder.Services.AddSingleton<TasksRepository>();
+    builder.Services.AddSingleton<CreateTaskValidator>();
 
     var app = builder.Build();
 
@@ -50,6 +60,8 @@ try
             return TypedResults.Problem(detail: "Database unavailable", statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     });
+
+    app.MapGroup("/api/v1").MapTasks();
 
     app.Run();
 }
