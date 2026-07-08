@@ -2,6 +2,40 @@
 > Append-only. One entry per agent session/slice. This file is half the deliverable:
 > it is the narrative evidence of how the system was built.
 
+## Summary
+
+Six slices shipped, five squash-merged PRs (all 11 spec ACs covered by PR #4;
+frontend by PR #5), plus this packaging pass. ~4h40min total elapsed
+(bootstrap 1h, create-and-get 40min, transitions 35min, list-patch 40min,
+web 55min, packaging ~30min).
+
+| Slice | PR | ACs | Elapsed |
+|---|---|---|---|
+| bootstrap | [#1](https://github.com/gcole2030/taskflow/pull/1) | — (infra) | 1h |
+| create-and-get | [#2](https://github.com/gcole2030/taskflow/pull/2) | AC1–AC3 | 40min |
+| transitions | [#3](https://github.com/gcole2030/taskflow/pull/3) | AC4–AC8 | 35min |
+| list-patch | [#4](https://github.com/gcole2030/taskflow/pull/4) | AC9–AC11 | 40min |
+| web | [#5](https://github.com/gcole2030/taskflow/pull/5) | §6 (frontend) | 55min |
+| packaging | (this branch) | — | ~30min |
+
+**Human corrections: zero, across every slice.** Every fix recorded below was
+self-discovered by the agent via a failing test, a build error, or its own
+`/review-slice` pass — never a rejection or redirection from me. That's a
+genuine outcome of the harness (CLAUDE.md + skill + commands + per-PR AI
+review), not a claim I'd expect to hold on a larger or longer-running project;
+noting it plainly rather than manufacturing corrections that didn't happen.
+
+One line each, in build order:
+
+1. **bootstrap** — `TaskStatus` name collided with `System.Threading.Tasks.TaskStatus`; a Windows `obj/` artifact broke the Linux Docker build (`.dockerignore`); `dotnet new sln` defaulted to `.slnx`, invisible to CI's glob; `PostgresFixture` reset the DB before migrations ran; config read before `WebApplicationFactory` merged its override; an obsolete Testcontainers ctor would've failed `-warnaserror`.
+2. **create-and-get** — Dapper has no built-in `DateOnly` parameter support; Dapper silently coerces enum parameters to int before custom type handlers run (`tasks_priority_check` violation); Dapper's constructor-matching record materialization bypasses type handlers entirely. All three fixed before the green commit.
+3. **transitions** — none found; applied the create-and-get review's lesson proactively (`FOR UPDATE` row lock from the start, not as a fix-up).
+4. **list-patch** — assumed `JsonElement.GetDateOnly()` existed; it doesn't (`DateOnly.TryParse` instead).
+5. **web** — deleting default assets left `web/public/` empty, which git doesn't track and would break `Dockerfile.web`'s `COPY`; the API had no CORS policy at all, which would have silently blocked every browser request.
+6. **packaging** — ADR-0003 (referenced by this file's own "definition of complete" checklist) had never actually been written; added it before finalizing the README that points to it.
+
+Full detail, spec references, and AI review verdicts per slice below.
+
 Format per entry:
 
 ## <date time> — <slice / task>
@@ -273,5 +307,57 @@ Format per entry:
      `docker-compose.yml`), exposing `X-Total-Count` for the list page.
      Verified the fix with the same curl reproduction (now returns the
      expected `Access-Control-Allow-*` headers).
-- **Review:** Pending — `/review-slice` to run before PR.
+- **Review:** `/review-slice` → APPROVE. Verified `legalTransitions.ts` matches
+  `Domain/StateMachine.cs` byte-for-byte (necessary duplication — no shared
+  codegen mechanism in scope — caught by tests on both sides if either
+  drifts), the CORS fix, no scope creep beyond §6. One nit: `usePatchTask`/
+  `patchTask` were implemented but never consumed by any component (§6
+  doesn't require an edit-task UI) — removed in a follow-up `fix(web)`
+  commit. Merged as PR #5.
 - **Elapsed:** ~55min (started 17:46).
+
+## 2026-07-07 20:12 — chore/packaging
+- **Agent & entry point:** Claude Code, ad-hoc prompt (final packaging pass, per
+  `prompts/60-packaging.md`), branched off `main` after PR #5 (web) merged —
+  all 11 backend ACs and the full §6 frontend already shipped.
+- **Spec reference:** §7 (ADRs), §8 (Definition of done — this pass closes out
+  the "6+ merged PRs", "AI-DEVELOPMENT.md has an entry per session", "ADRs
+  0001–0003 recorded", and "`make drill` passes from a clean clone" items).
+  No application-code spec surface — this slice is documentation only, per
+  the prompt's explicit "Do not modify application code."
+- **What the agent did:**
+  - Noticed `README.md`'s own "Definition of complete" checklist (a
+    prospective runbook written before any code existed, checked in as the
+    harness's first commit) required "ADRs 0001–0003 recorded," but only
+    0001 and 0002 existed — ADR-0003 ("state machine enforced in domain
+    code, mirrored/not by DB CHECK constraints") had been flagged for
+    writing "immediately after PR #3 merged, while context is hot" in that
+    same runbook, but was never actually written during `slice/transitions`.
+    Wrote it now (`docs/adr/0003-state-machine-in-domain-code.md`), checking
+    the actual schema first (`db/migrations/001_initial_schema.sql`'s CHECK
+    constraints validate enum membership, not transition legality — the ADR
+    states that precisely rather than repeating the runbook's looser framing).
+  - Replaced `README.md` (the prospective process runbook — its job was
+    done; the real process is `docs/AI-DEVELOPMENT.md`) with the product
+    README: 3-command quickstart, Mermaid architecture diagram, an API
+    surface table with AC references, the test-strategy section (unit/
+    integration/frontend, matching this file's actual test counts), a
+    scope-cuts table transcribing spec §9 with a one-line rationale per
+    item, and a "How this was built" section linking CLAUDE.md, the skill,
+    the commands, `prompts/`, `docs/AI-DEVELOPMENT.md`, and the ADRs.
+  - Generated `CHANGELOG.md` from `git log --pretty=... main` — one entry
+    per squash-merged PR, in commit order, with PR links.
+  - Added the summary block (slice/PR/AC/elapsed table, the "human
+    corrections: zero" note, one-line-per-slice correction recap) to the top
+    of this file.
+  - Ran `make drill`: cloned fresh into a temp dir from `origin/main`,
+    `docker compose up -d --build`, healthy in **38s** (target <120s), then
+    `dotnet test` against that fresh clone — 49 unit + 24 integration
+    passing. Confirms the quickstart claim in the new README is true, not
+    aspirational.
+- **Human corrections:** none.
+- **Review:** Pending — `/review-slice` to run before PR (adjusted for a
+  docs-only diff: no AC/transaction/SQL checks apply; the check that matters
+  here is "does the README/CHANGELOG accurately describe what's actually in
+  the repo," verified above by running the drill rather than just writing prose).
+- **Elapsed:** ~30min (started 20:12).
