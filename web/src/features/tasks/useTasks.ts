@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
-import type { CreateTaskInput, ListTasksParams, PatchTaskInput } from "./api";
+import type { CreateTaskInput, ListTasksParams } from "./api";
 import type { TaskStatus } from "./types";
 
 export function useTasks(filters: ListTasksParams) {
@@ -31,17 +31,6 @@ export function useCreateTask() {
   return useMutation({
     mutationFn: (input: CreateTaskInput) => api.createTask(input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks"] }),
-  });
-}
-
-export function usePatchTask(id: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: PatchTaskInput) => api.patchTask(id, input),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["tasks"] });
-      queryClient.invalidateQueries({ queryKey: ["task", id] });
-    },
   });
 }
 

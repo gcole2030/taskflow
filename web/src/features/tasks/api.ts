@@ -74,22 +74,6 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
   return handle<Task>(response);
 }
 
-export interface PatchTaskInput {
-  title?: string;
-  description?: string | null;
-  priority?: Priority;
-  dueDate?: string | null;
-}
-
-export async function patchTask(id: string, input: PatchTaskInput): Promise<Task> {
-  const response = await fetch(`${API_BASE}/tasks/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  return handle<Task>(response);
-}
-
 export async function transitionTask(
   id: string,
   to: TaskStatus,
