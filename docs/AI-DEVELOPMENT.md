@@ -208,5 +208,70 @@ Format per entry:
 - **Human corrections:** none — self-corrected one API-surface mistake:
   assumed `JsonElement.GetDateOnly()` existed (it doesn't); fixed with
   `DateOnly.TryParse` on the raw string instead.
-- **Review:** Pending — `/review-slice` to run before PR.
+- **Review:** `/review-slice` → APPROVE with 2 nits, both fixed: (1)
+  `PatchTaskValidator`'s deliberate omission of the due-date-in-the-past
+  check (unlike `CreateTaskValidator`) had no comment explaining it was
+  intentional — added one. (2) `status`/`priority` query params bound as
+  nullable enums would silently drop an unparseable value as "not supplied"
+  rather than 400ing — rebound as strings with explicit validation, plus a
+  new test. Merged as PR #4.
 - **Elapsed:** ~40min (started 17:22).
+
+## 2026-07-07 17:46 — slice/web
+- **Agent & entry point:** Claude Code, `/implement-slice web` (via
+  `prompts/50-web.md`), branched off `main` after PR #4 (list-patch) merged —
+  **all 11 backend ACs were already covered before this slice started.**
+- **Spec reference:** §6 (frontend scope) in full: task board/list with
+  status filter and priority badge, create-task form with inline validation
+  errors, status-change actions honoring the state machine, task detail with
+  audit timeline. §3 (state machine, mirrored client-side as
+  `legalTransitions`). No auth, no design heroics — kept lean per spec.
+- **What the agent did:**
+  - Scaffolded `web/` via `create-next-app` (Next.js 16, App Router,
+    TypeScript, `output: "standalone"`), added TanStack Query and a
+    Vitest + React Testing Library toolchain (not bundled with Next.js).
+  - Wrote exactly the two test suites the prompt asked for, first:
+    `legalTransitions.test.ts` (30 cases — a table-driven mirror of backend
+    `Domain.StateMachine`, same table as `StateMachineTests.cs`) and
+    `CreateTaskForm.test.tsx` (renders a mocked 400 problem+json inline).
+    **Red run shown**: both failed on import resolution before
+    `legalTransitions.ts`/`CreateTaskForm.tsx` existed — committed at that
+    state as `test(web)`.
+  - Implemented the feature: `api.ts` (typed fetch wrappers), `useTasks.ts`
+    (TanStack Query hooks, invalidating `['tasks']` and `['task', id]` on
+    every mutation per the vertical-slice skill's frontend convention),
+    `legalTransitions.ts`, and the five components (`TaskList`,
+    `StatusFilterTabs`, `PriorityBadge`, `CreateTaskForm`, `StatusActions`,
+    `AuditTimeline`) wired into three App Router pages (`/`, `/tasks/new`,
+    `/tasks/[id]`). **Green run**: 31 Vitest tests passing, `next build`
+    clean (typecheck + all 4 routes), `eslint` clean.
+  - Brought up the **full** `docker compose up -d --build` stack (db+api+web,
+    first time all three services exist) and verified end-to-end with curl:
+    `wait-healthy.sh` reports both api and web healthy; created a task via
+    `POST /api/v1/tasks` with an `Origin: http://localhost:3000` header
+    (simulating the browser's fetch) and confirmed the response, then
+    confirmed `GET /api/v1/tasks` returns it with `X-Total-Count`.
+  - **No browser tool is available in this environment.** Verification above
+    covers the real network/data layer (API responses, CORS headers, Docker
+    build) but not actual visual rendering or click-through interaction —
+    that's an explicit gap, not a claimed pass.
+  - `make gate` now runs the whole stack in one command (guardrails + .NET
+    tests + `eslint` + `vitest` + `next build`) since `web/package.json`
+    exists — all green.
+- **Human corrections:** none — self-corrected two issues found via testing:
+  1. Deleting the default `create-next-app` SVG assets left `web/public/`
+     completely empty; since git doesn't track empty directories, a fresh
+     clone would be missing `public/` entirely and the Dockerfile.web's
+     `COPY --from=build /web/public ./public` step would fail — the same
+     class of bug as the bootstrap slice's `.dockerignore` issue. Added a
+     real `robots.txt` instead of a placeholder.
+  2. **The API had no CORS policy at all** — confirmed via a manual OPTIONS
+     preflight curl returning 405 with zero `Access-Control-*` headers,
+     which would have silently blocked every browser fetch from the web app.
+     Added a CORS policy in `Program.cs` scoped to a `WebOrigin` config value
+     (defaults to `http://localhost:3000`, set explicitly in
+     `docker-compose.yml`), exposing `X-Total-Count` for the list page.
+     Verified the fix with the same curl reproduction (now returns the
+     expected `Access-Control-Allow-*` headers).
+- **Review:** Pending — `/review-slice` to run before PR.
+- **Elapsed:** ~55min (started 17:46).
