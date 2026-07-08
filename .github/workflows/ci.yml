@@ -1,0 +1,86 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash scripts/guardrails.sh
+      - name: Detect solution
+        id: has
+        run: echo "sln=$(ls ./*.sln 2>/dev/null | head -1)" >> "$GITHUB_OUTPUT"
+      - name: No solution yet — harness-only state
+        if: steps.has.outputs.sln == ''
+        run: echo "No .sln found; skipping build/test (expected before the bootstrap slice)."
+      - uses: actions/setup-dotnet@v5
+        if: steps.has.outputs.sln != ''
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet restore
+        if: steps.has.outputs.sln != ''
+      - run: dotnet build --no-restore -warnaserror
+        if: steps.has.outputs.sln != ''
+      - run: dotnet test --no-build --logger "trx" --results-directory ./test-results
+        if: steps.has.outputs.sln != ''
+      - uses: actions/upload-artifact@v5
+        if: steps.has.outputs.sln != '' && always()
+        with:
+          name: test-results
+          path: ./test-results
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Detect web app
+        id: has
+        run: echo "pkg=$([ -f web/package.json ] && echo yes || true)" >> "$GITHUB_OUTPUT"
+      - name: No web app yet — harness-only state
+        if: steps.has.outputs.pkg == ''
+        run: echo "No web/package.json; skipping (expected before the web slice)."
+      - uses: actions/setup-node@v5
+        if: steps.has.outputs.pkg == 'yes'
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        if: steps.has.outputs.pkg == 'yes'
+        working-directory: web
+      - run: npm run lint
+        if: steps.has.outputs.pkg == 'yes'
+        working-directory: web
+      - run: npm run test --if-present
+        if: steps.has.outputs.pkg == 'yes'
+        working-directory: web
+      - run: npm run build
+        if: steps.has.outputs.pkg == 'yes'
+        working-directory: web
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    needs: [api, web]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Detect buildable stack
+        id: has
+        run: |
+          echo "src=$([ -d src ] && echo yes || true)" >> "$GITHUB_OUTPUT"
+          echo "web=$([ -f web/package.json ] && echo yes || true)" >> "$GITHUB_OUTPUT"
+      - name: No app yet — harness-only state
+        if: steps.has.outputs.src == ''
+        run: echo "No src/; skipping compose smoke (expected before the bootstrap slice)."
+      - name: Bring up db+api (web not built yet)
+        if: steps.has.outputs.src == 'yes' && steps.has.outputs.web == ''
+        run: docker compose up -d --build db api
+      - name: Bring up full stack
+        if: steps.has.outputs.src == 'yes' && steps.has.outputs.web == 'yes'
+        run: docker compose up -d --build
+      - run: bash scripts/wait-healthy.sh
+        if: steps.has.outputs.src == 'yes'
+      - run: docker compose down -v
+        if: steps.has.outputs.src == 'yes' && always()
