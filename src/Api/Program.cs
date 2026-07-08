@@ -37,7 +37,17 @@ try
     builder.Services.AddSingleton<CreateTaskValidator>();
     builder.Services.AddSingleton<PatchTaskValidator>();
 
+    var webOrigin = builder.Configuration["WebOrigin"] ?? "http://localhost:3000";
+    builder.Services.AddCors(options =>
+        options.AddDefaultPolicy(policy =>
+            policy.WithOrigins(webOrigin)
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .WithExposedHeaders("X-Total-Count")));
+
     var app = builder.Build();
+
+    app.UseCors();
 
     var connectionString = app.Configuration.GetConnectionString("Db")
         ?? throw new InvalidOperationException("ConnectionStrings:Db is not configured.");
